@@ -127,10 +127,7 @@ RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 # Configure bashrc - sourced by every interactive shell, including each new
 # tmux window (via ~/.bash_profile)
 RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc && \
-    echo '[ ! -z "$TERM" -a -r /etc/motd ] && /etc/motd' >> ~/.bashrc && \
-    echo '' >> ~/.bashrc && \
-    echo '# upgrade GoCommands (once per container, not once per tmux window)' >> ~/.bashrc && \
-    echo '[ -f /tmp/.gocmd-upgraded ] || { sudo gocmd upgrade > /dev/null 2>&1; touch /tmp/.gocmd-upgraded; }' >> ~/.bashrc
+    echo '[ ! -z "$TERM" -a -r /etc/motd ] && /etc/motd' >> ~/.bashrc
 
 # set path for Go, NPM globals, OpenCode, and the on-demand harnesses
 # (.local/bin must stay first: it holds the shims and is where the Claude Code
