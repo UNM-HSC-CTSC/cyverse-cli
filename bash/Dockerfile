@@ -52,7 +52,7 @@ RUN curl -L "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
 # Install remaining packages: locales, terminal tools, s3fs, Node/NPM
 RUN apt-get update && \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y locales lolcat neofetch figlet w3m-img imagemagick s3fs fuse nodejs socat bubblewrap && \
+    apt-get install -y locales lolcat figlet w3m-img imagemagick s3fs fuse nodejs socat bubblewrap && \
     locale-gen en_US.UTF-8 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -127,10 +127,7 @@ RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 # Configure bashrc - sourced by every interactive shell, including each new
 # tmux window (via ~/.bash_profile)
 RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc && \
-    echo '[ ! -z "$TERM" -a -r /etc/motd ] && /etc/motd' >> ~/.bashrc && \
-    echo '' >> ~/.bashrc && \
-    echo '# upgrade GoCommands (once per container, not once per tmux window)' >> ~/.bashrc && \
-    echo '[ -f /tmp/.gocmd-upgraded ] || { sudo gocmd upgrade > /dev/null 2>&1; touch /tmp/.gocmd-upgraded; }' >> ~/.bashrc
+    echo '[ ! -z "$TERM" -a -r /etc/motd ] && /etc/motd' >> ~/.bashrc
 
 # set path for Go, NPM globals, OpenCode, and the on-demand harnesses
 # (.local/bin must stay first: it holds the shims and is where the Claude Code
