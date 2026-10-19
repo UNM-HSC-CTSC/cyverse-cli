@@ -1,0 +1,135 @@
+#!/bin/bash
+# Non-interactive CloudShell: the Entrypoint of the DE batch tool.
+#
+# The DE runs each batch step as `bash <generated script>` in the analysis
+# working directory (/de-app-work), after downloading every selected input
+# into it. The generated script is this command plus the app's parameters, so
+# a submission arrives as something like:
+#
+#   batch-runner --init init.sh --run run.sh environment.yaml src
+#
+# where each value is the basename of a file or folder that is already sitting
+# in the working directory. This script:
+#
+#   1. moves those inputs into ./inputs/ so they stay apart from outputs,
+#   2. sources inputs/<init> in its own shell (optional),
+#   3. sources inputs/<run> in a fresh shell that starts with init's exported
+#      environment, so `conda activate` in init.sh still holds in run.sh,
+#   4. exits with run.sh's status (or init.sh's, if init failed).
+#
+# Everything left in the working directory is uploaded to the analysis result
+# folder afterwards, so caches and environments go to /tmp instead.
+
+set -uo pipefail
+
+WORKDIR="$PWD"
+INPUT_DIR="$WORKDIR/inputs"
+STATE_DIR="$(mktemp -d /tmp/batch-runner.XXXXXX)"
+INIT_ENV="$STATE_DIR/init.env"
+CONDA_SH=/opt/conda/etc/profile.d/conda.sh
+
+log() { echo "[batch-runner $(date '+%F %T')] $*"; }
+# To both streams, but never via `tee /dev/stderr`: when stderr is redirected to
+# a file (as the DE does), reopening /dev/stderr truncates that file.
+die() { log "ERROR: $2"; log "ERROR: $2" >&2; exit "$1"; }
+
+# Keep caches out of the working directory: anything written there counts
+# against the 5GiB volume and is uploaded to the data store.
+export HOME=/root
+export XDG_CACHE_HOME=/tmp/cache
+export PIP_CACHE_DIR=/tmp/cache/pip
+export CONDA_PKGS_DIRS=/tmp/conda/pkgs
+export R_LIBS_USER=/tmp/R/library
+mkdir -p "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" "$CONDA_PKGS_DIRS" "$R_LIBS_USER"
+
+# ---- arguments ------------------------------------------------------------
+# Shift one at a time and treat a following --flag as "no value": an optional
+# DE parameter left blank arrives as a bare trailing flag.
+init_arg="" run_arg="" inputs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --init|--run|--input)
+      flag="$1" val=""
+      if [ $# -gt 1 ] && [[ "$2" != --* ]]; then val="$2"; shift; fi
+      case "$flag" in
+        --init) init_arg="$val" ;;
+        --run) run_arg="$val" ;;
+        --input) [ -n "$val" ] && inputs+=("$val") ;;
+      esac
+      ;;
+    --*) die 2 "unknown option: $1" ;;
+    *) inputs+=("$1") ;;
+  esac
+  shift
+done
+
+[ -n "$run_arg" ] || die 2 "no run script given (expected --run <script>)"
+
+# ---- gather inputs into ./inputs -------------------------------------------
+# A rename within the same volume, so it costs nothing even for large inputs.
+mkdir -p "$INPUT_DIR"
+for item in "$init_arg" "$run_arg" "${inputs[@]}"; do
+  [ -n "$item" ] || continue
+  name="$(basename "$item")"
+  case "$name" in
+    logs|inputs|.|..) log "WARNING: not moving reserved name '$name'"; continue ;;
+  esac
+  if [ -e "$INPUT_DIR/$name" ]; then
+    continue  # already moved (e.g. listed twice)
+  elif [ -e "$WORKDIR/$name" ]; then
+    mv "$WORKDIR/$name" "$INPUT_DIR/$name"
+  else
+    log "WARNING: input '$name' not found in $WORKDIR"
+  fi
+done
+
+init_script="${init_arg:+$INPUT_DIR/$(basename "$init_arg")}"
+run_script="$INPUT_DIR/$(basename "$run_arg")"
+[ -z "$init_script" ] || [ -f "$init_script" ] || die 2 "init script not found: $init_script"
+[ -f "$run_script" ] || die 2 "run script not found: $run_script"
+
+log "working directory: $WORKDIR"
+log "inputs:"; (cd "$INPUT_DIR" && ls -la) | sed 's/^/    /'
+
+# ---- init -------------------------------------------------------------------
+# Sourced (not executed) so activation happens in this shell, and the EXIT trap
+# snapshots the exported environment however init ends, including an explicit
+# `exit` inside the script. `bash script` rather than `./script`: the
+# executable bit does not survive the data store.
+if [ -n "$init_script" ]; then
+  log "running init: $(basename "$init_script")"
+  bash -c '
+    trap "export -p > \"$1\"" EXIT
+    . "$2"
+    cd "$3"
+    . "$4"
+  ' batch-init "$INIT_ENV" "$CONDA_SH" "$WORKDIR" "$init_script"
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    die "$status" "init script failed (exit $status); run script was not started"
+  fi
+  log "init finished"
+else
+  log "no init script given, skipping init"
+fi
+
+# ---- run --------------------------------------------------------------------
+# Restore init's exports, minus the ones that describe the old shell rather
+# than the environment. conda.sh is sourced first: it defines the `conda` shell
+# function, which export -p does not carry.
+log "running: $(basename "$run_script")"
+bash -c '
+  . "$2"
+  if [ -s "$1" ]; then
+    . <(grep -v -E "^declare -x (PWD|OLDPWD|SHLVL|_)=" "$1")
+  fi
+  cd "$3"
+  . "$4"
+' batch-run "$INIT_ENV" "$CONDA_SH" "$WORKDIR" "$run_script"
+status=$?
+
+rm -rf "$STATE_DIR"
+if [ "$status" -ne 0 ]; then
+  die "$status" "run script failed (exit $status)"
+fi
+log "run finished successfully"
